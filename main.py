@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import requests
 from bs4 import BeautifulSoup
-from googlesearch import search
+from googlesearch import search  # Esta importação funciona com googlesearch-python
 import uvicorn
 import logging
 import os
@@ -35,12 +35,12 @@ def medical_search(request: SearchRequest):
     ]
 
     # Tentativa de busca refinada
-    # Usamos uma query que foca nos sites, mas se falhar, tentamos uma mais genérica
     search_query = f"{query} site:({' OR '.join(sites)})"
     logger.info(f"Buscando por: {search_query}")
 
     try:
-        # Tenta obter resultados (aumentamos para 3 para ter backup)
+        # A biblioteca googlesearch-python retorna um gerador
+        # Usamos list() para pegar os resultados e tratamos possíveis erros de rede
         search_results = list(search(search_query, num_results=3, lang="pt"))
         
         # Se não encontrar nada com os sites, tenta busca aberta
@@ -63,7 +63,7 @@ def medical_search(request: SearchRequest):
 
                 soup = BeautifulSoup(response.content, 'html.parser')
                 
-                # Limpeza agressiva
+                # Limpeza agressiva de tags irrelevantes
                 for tag in soup(["script", "style", "header", "footer", "nav", "aside", "form", "noscript"]):
                     tag.decompose()
 
@@ -85,8 +85,10 @@ def medical_search(request: SearchRequest):
 
     except Exception as e:
         logger.error(f"Erro na busca: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        # Retornamos uma mensagem amigável em vez de travar
+        return {"source": "Erro", "content": f"Ocorreu um erro na busca: {str(e)}"}
 
 if __name__ == "__main__":
+    # Render fornece a porta na variável de ambiente PORT
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
