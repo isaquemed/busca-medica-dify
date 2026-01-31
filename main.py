@@ -3,25 +3,30 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import requests
 from bs4 import BeautifulSoup
-from googlesearch import search 
+from googlesearch import search
 import uvicorn
 import logging
 import os
+from fastapi.openapi.utils import get_openapi
 
 # Configuração de logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Busca Médica Especializada")
+app = FastAPI(
+    title="Busca Médica Especializada",
+    description="Ferramenta de busca médica para o Dify",
+    version="1.0.0"
+)
 
+# 1. CORREÇÃO DE CORS (Obrigatório para o Dify Cloud/Navegador)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], 
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 class SearchRequest(BaseModel):
     query: str
@@ -38,22 +43,18 @@ def medical_search(request: SearchRequest):
 
     # Fontes confiáveis
     sites = [
-        "bvsms.saude.gov.br",
+        "bvms.saude.gov.br",
         "www.gov.br/conitec/pt-br",
         "www.scielo.br",
         "amb.org.br",
     ]
-
-    # Tentativa de busca refinada
-    search_query = f"{query} site:({' OR '.join(sites)})"
-    logger.info(f"Buscando por: {search_query}")
-
+    
+    # Lógica de busca (mantida a sua original)
     try:
-        # A biblioteca googlesearch-python retorna um gerador
-        # Usamos list() para pegar os resultados e tratamos possíveis erros de rede
+        search_query = f"site:{' OR site:'.join(sites)} {query}"
+        logger.info(f"Iniciando busca: {search_query}")
         search_results = list(search(search_query, num_results=3, lang="pt"))
-        
-        # Se não encontrar nada com os sites, tenta busca aberta
+
         if not search_results:
             logger.info("Nenhum resultado nos sites específicos, tentando busca aberta.")
             search_results = list(search(query, num_results=3, lang="pt"))
@@ -61,44 +62,48 @@ def medical_search(request: SearchRequest):
         if not search_results:
             return {"source": "N/A", "content": "Nenhuma informação encontrada."}
 
-        # Tenta processar o primeiro resultado válido
         for url in search_results:
             try:
                 logger.info(f"Processando URL: {url}")
-                headers = {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36'
-                }
+                headers = {'User-Agent': 'Mozilla/5.0'}
                 response = requests.get(url, headers=headers, timeout=10)
                 response.raise_for_status()
-
                 soup = BeautifulSoup(response.content, 'html.parser')
                 
-                # Limpeza agressiva de tags irrelevantes
-                for tag in soup(["script", "style", "header", "footer", "nav", "aside", "form", "noscript"]):
+                for tag in soup(['script', 'style', 'header', 'footer', 'nav', 'aside', 'form', 'noscript']):
                     tag.decompose()
 
-                # Extração de texto limpo
-                lines = (line.strip() for line in soup.get_text(separator='\n').splitlines())
-                chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-                text = '\n'.join(chunk for chunk in chunks if chunk)
-
-                if len(text) > 100:  # Garante que pegamos conteúdo real
-                    return {
-                        "source": url,
-                        "content": text[:5000]
-                    }
+                text = soup.get_text(separator=' ').strip()
+                if len(text) > 100:
+                    return {"source": url, "content": text[:5000]}
             except Exception as e:
                 logger.error(f"Erro ao processar {url}: {e}")
                 continue
 
-        return {"source": "N/A", "content": "Não foi possível extrair conteúdo útil dos resultados encontrados."}
-
+        return {"source": "N/A", "content": "Não foi possível extrair conteúdo útil."}
     except Exception as e:
         logger.error(f"Erro na busca: {e}")
-        # Retornamos uma mensagem amigável em vez de travar
         return {"source": "Erro", "content": f"Ocorreu um erro na busca: {str(e)}"}
 
+# 2. CORREÇÃO DO ESQUEMA OPENAPI PARA O DIFY
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    openapi_schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        routes=app.routes,
+    )
+    # Força a versão 3.0.0 que o Dify prefere
+    openapi_schema["openapi"] = "3.0.0"
+    # Adiciona o servidor do Render diretamente no esquema
+    openapi_schema["servers"] = [{"url": "https://busca-medica-dify-i4gy.onrender.com"}]
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
+
+app.openapi = custom_openapi
+
 if __name__ == "__main__":
-    # Render fornece a porta na variável de ambiente PORT
-    port = int(os.environ.get("PORT", 8000))
+    port = int(os.environ.get("PORT", 8000 ))
     uvicorn.run(app, host="0.0.0.0", port=port)
